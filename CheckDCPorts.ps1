@@ -23,7 +23,7 @@
 #
 ###############################################################
 
-# Version 1.1
+# Version 1.2
 
 [cmdletbinding()]  
     Param(  
@@ -31,9 +31,9 @@
         [switch]$LatencyOnly,
         [parameter()]
         [string]$Domain,
-        [array]$ListOfTCPPorts=("88","445","389","3268","135","139","3269","464","5722","636","9389","5985","5986"),
+        [array]$ListOfTCPPorts=("88","445","389","3268","135","139","636","3269","464","5722","53","9389","5985","5986"),
         [parameter()]
-        [array]$ListOfUDPPorts=("88","389","464","123"),
+        [array]$ListOfUDPPorts=("88","389","464","123","53"),
         [parameter()]
         [Array]$Server
     )
@@ -324,6 +324,7 @@ function PortNote ($Port){
 	5985    {$Return="Fix Recommended, PowerShell Remoting will not work"}
 	5986    {$Return="Closed Ok, PowerShell Remoting over SSL will not work IF it is configured."}
 	123	{$Return="Must Fix, NTP based Time sync will fail"}
+    53  {$Return="Must Fix, IF the DC is being used as DNS server or relay"}
 	
 	}
 
@@ -331,7 +332,7 @@ $Return
 }
 
 $Results=@()
-import-module activedirectory
+
 
 if ($Server) {
 
@@ -339,6 +340,8 @@ if ($Server) {
 
 }
 else {
+
+    import-module activedirectory
 
     #First try to get obtain a list via Get-ADDomain
     Write-warning "Obtaining list of DCs ... "
@@ -376,7 +379,7 @@ $ServerList | ForEach-Object {
     }
     
     if ($LatencyOnly) {
-        $Results += new-object PSObject -property ([ordered]@{
+        $Results += new-object PSObject -property (@{
  
               "Latency"           = $PingTest.responsetime
               "ComputerName"      = $Server
@@ -394,7 +397,7 @@ $ServerList | ForEach-Object {
   
             $TCPResults=Test-port -computer $Server -port $_ -TCP  
         
-            $Results += new-object PSObject -property ([ordered]@{
+            $Results += new-object PSObject -property (@{
  
               "Passed"            = $TCPResults.Open
               "ComputerName"      = $Server
@@ -413,7 +416,7 @@ $ServerList | ForEach-Object {
   
             $UDPResults=Test-port -computer $Server -port $_ -UDP 
         
-            $Results += new-object PSObject -property ([ordered]@{
+            $Results += new-object PSObject -property (@{
  
               "Passed"            = $UDPResults.Open
               "ComputerName"      = $Server
@@ -438,8 +441,8 @@ if ($latencyonly) {
     $results | Sort-Object -Property Latency | ft -autosize | out-file PortTest.txt
      "Wrote PortTest.txt"
 } else {
-    $Results | Sort-Object -Property Passed -Descending | ft -autosize -wrap
-    $Results | Sort-Object -Property Passed -Descending | ft -autosize | out-file PortTest.txt
+    $Results | Sort-Object -Property Passed -Descending | ft Passed,Type,Port,ComputerName,RemoteAddress,Latency,Notes -autosize -wrap
+    $Results | Sort-Object -Property Passed -Descending | ft Passed,Type,Port,ComputerName,RemoteAddress,Latency,Notes -autosize | out-file PortTest.txt
     "Wrote PortTest.txt"
 }
 
