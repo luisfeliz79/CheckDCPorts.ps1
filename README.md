@@ -38,7 +38,7 @@ A script to check Active Directory Domain Services required ports
 	-   5985  PowerShell Remoting
 	-   5986  PowerShell Remoting over SSL
 	-   123	  NTP
-        -   53    DNS
+	-   53    DNS
 	
 # Sample Screenshot
 ![](https://github.com/luisfeliz79/CheckDCPorts.ps1/raw/master/SampleOutput.PNG)
