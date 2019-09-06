@@ -23,7 +23,6 @@
 #
 ###############################################################
 
-# Version 1.2
 
 [cmdletbinding()]  
     Param(  
@@ -35,9 +34,20 @@
         [parameter()]
         [array]$ListOfUDPPorts=("88","389","464","123","53"),
         [parameter()]
-        [Array]$Server
+        [Array]$Server,
+        [Switch]$Minimum,
+        [Switch]$All
     )
 
+$Version = 1.3
+
+if (-not (get-module activedirectory -ListAvailable)) {
+    "Please install the Activate Directory Module"
+    "        Install-WindowsFeature RSAT-AD-PowerShell" 
+    break
+}
+
+$VerbosePreference = [System.Management.Automation.ActionPreference]::Continue
 
 if ($server -and $domain) { "Cannot use both -Server and -Domain";break }
 if (-not $server -and -not $domain) { while (-not $Domain) { $Domain=read-host "Domain" } }
@@ -181,7 +191,7 @@ function Test-Port{
                     If(!$wait) {  
                         #Close connection  
                         $tcpobject.Close()  
-                        Write-Verbose "Connection Timeout"  
+                        #Write-Verbose "Connection Timeout"  
                         #Build report  
                         $temp.Server = $c  
                         $temp.Port = $p  
@@ -230,23 +240,23 @@ function Test-Port{
                     #Set a timeout on receiving message 
                     $udpobject.client.ReceiveTimeout = $UDPTimeout 
                     #Connect to remote machine's port                
-                    Write-Verbose "Making UDP connection to remote server" 
+                    #Write-Verbose "Making UDP connection to remote server" 
                     $udpobject.Connect("$c",$p) 
                     #Sends a message to the host to which you have connected. 
-                    Write-Verbose "Sending message to remote host" 
+                    #Write-Verbose "Sending message to remote host" 
                     $a = new-object system.text.asciiencoding 
                     $byte = $a.GetBytes("$(Get-Date)") 
                     [void]$udpobject.Send($byte,$byte.length) 
                     #IPEndPoint object will allow us to read datagrams sent from any source.  
-                    Write-Verbose "Creating remote endpoint" 
+                    #Write-Verbose "Creating remote endpoint" 
                     $remoteendpoint = New-Object system.net.ipendpoint([system.net.ipaddress]::Any,0) 
                     Try { 
                         #Blocks until a message returns on this socket from a remote host. 
-                        Write-Verbose "Waiting for message return" 
+                        #Write-Verbose "Waiting for message return" 
                         $receivebytes = $udpobject.Receive([ref]$remoteendpoint) 
                         [string]$returndata = $a.GetString($receivebytes)
                         If ($returndata) {
-                           Write-Verbose "Connection Successful"  
+                           #Write-Verbose "Connection Successful"  
                             #Build report  
                             $temp.Server = $c  
                             $temp.Port = $p  
@@ -261,7 +271,7 @@ function Test-Port{
                             $udpobject.Close()  
                             #Make sure that the host is online and not a false positive that it is open 
                             If (Test-Connection -comp $c -count 1 -quiet) { 
-                                Write-Verbose "Connection Open"  
+                                #Write-Verbose "Connection Open"  
                                 #Build report  
                                 $temp.Server = $c  
                                 $temp.Port = $p  
@@ -273,7 +283,7 @@ function Test-Port{
                                 It is possible that the host is not online or that the host is online,  
                                 but ICMP is blocked by a firewall and this port is actually open. 
                                 #> 
-                                Write-Verbose "Host maybe unavailable"  
+                                #Write-Verbose "Host maybe unavailable"  
                                 #Build report  
                                 $temp.Server = $c  
                                 $temp.Port = $p  
@@ -284,7 +294,7 @@ function Test-Port{
                         } ElseIf ($Error[0].ToString() -match "forcibly closed by the remote host" ) { 
                             #Close connection  
                             $udpobject.Close()  
-                            Write-Verbose "Connection Timeout"  
+                            #Write-Verbose "Connection Timeout"  
                             #Build report  
                             $temp.Server = $c  
                             $temp.Port = $p  
@@ -325,6 +335,7 @@ function PortNote ($Port){
 	5986    {$Return="Closed Ok, PowerShell Remoting over SSL will not work IF it is configured."}
 	123	{$Return="Must Fix, NTP based Time sync will fail"}
     53  {$Return="Must Fix, IF the DC is being used as DNS server or relay"}
+    135 {$Return="Must Fix, RPC Endpoint Mapper"}
 	
 	}
 
@@ -332,42 +343,136 @@ $Return
 }
 
 $Results=@()
+Write-verbose "Version $version"
 
 
 if ($Server) {
 
+    $Server | foreach {
+
+        $name=$_
+
+        try { 
+            #Write-verbose "Resolving $_ ..."
+            $Result= [System.Net.Dns]::GetHostByName($_).hostname
+            }
+
+      Catch {
+            Write-host "`n`n`nERROR: Could not resolve $name, check the name, or DNS Servers and try again" -ForegroundColor Red
+            Write-Verbose "DNS Servers:"
+            (Get-WmiObject Win32_NetworkAdapterConfiguration).DNSServerSearchOrder | Sort-Object -Unique
+            break
+
+            }
+
+    }
     $ServerList=$Server
+        
+    
 
 }
 else {
 
-    import-module activedirectory
+    import-module activedirectory -verbose:$false
 
     #First try to get obtain a list via Get-ADDomain
-    Write-warning "Obtaining list of DCs ... "
-    $ServerList =(get-addomain -Server $Domain).ReplicaDirectoryServers
+    Write-Verbose "Obtaining Domain Info ... "
+    $DomainInfo=get-addomain -Identity $Domain
+    
+    $ForestInfo=get-adforest -Identity $DomainInfo.forest
+    $MySite=(nltest /dsgetsite)[0]
+    $ServerList=@()
+        
+    $Serverlist+=new-object PSObject -Property (@{"Name"=$DomainInfo.PDCEmulator ;"Reason"="PDC"})
+    $Serverlist+=new-object PSObject -Property (@{"Name"=$DomainInfo.RidMaster ;"Reason"="RID Master"})
+    $Serverlist+=new-object PSObject -Property (@{"Name"=$DomainInfo.InfrastructureMaster ;"Reason"="Infra Master"})
+    $Serverlist+=new-object PSObject -Property (@{"Name"=$ForestInfo.DomainNamingMaster ;"Reason"="Domain Naming Master"})
+    $Serverlist+=new-object PSObject -Property (@{"Name"=$ForestInfo.SchemaMaster ;"Reason"="Schema Master"})
+    $ServerListtmp=$ServerList
+    $serverList=@()
+    $ServerListTmp | Group-Object -Property Name | foreach {
+        $Serverlist+=new-object PSObject -Property (@{"Name"=$_.Name ;"Reason"=$_.Group.Reason -join ", "})
+        }           
+
+
+    If ($Minimum) {
+
+        Write-Verbose "Selecting FSMO DCs and Potential Replica Partners ... "
+     
+        #Get Site info
+        $SitesToResolve=@()
+        $sListTmp=@()
+        $PotentialPartners=@()
+        $ConfigPath=$ForestInfo.PartitionsContainer -replace "CN=Partitions,",""
+        [adsi]$SiteLinks="LDAP://CN=IP,CN=Inter-Site Transports,CN=Sites,$ConfigPath"
+        
+        #Go through each sitelink and where mysite is listed, record linked sites.
+        $SiteLinks.children | foreach { 
+            $sName=$_.Name
+            $sList=$_.SiteList
+            $sList | foreach { $sListTmp+=$(($_ -split "CN=")[1] -Replace ",","") }
+
+            if ($sListTmp -contains $MySite) {
+
+                $sList | foreach { $SitesToResolve+=$_ }
+
+            }
+                                  
+        }
+
+        #For each site in the list, get a list of DCs
+        $SitesToResolve = $SitesToResolve | Sort-Object -Unique
+        $SitesToResolve | foreach {
+            $SiteName=$(($_ -split "CN=")[1] -Replace ",","")
+            [adsi]$Site="LDAP://CN=Servers,$_"
+            ($Site.Children | Select dNSHostName).dNSHostName | foreach {  
+                
+                if ($ServerList.Name -notcontains $_) {
+                
+                    $Serverlist+=new-object PSObject -Property (@{"Name"=$_ ;"Reason"="Potential Replica Partner [$SiteName]"})
+                }
+            }
+        }
+
+  
+    } else {
+
+        Write-Verbose "Selecting ALL $Domain DCs..."
+        $DomainInfo.ReplicaDirectoryServers | foreach {
+
+              if ($ServerList.Name -notcontains $_) {
+                
+                    $Serverlist+=new-object PSObject -Property (@{"Name"=$_ ;"Reason"="$Domain DC"})
+              }
+
+        }
+    }
 
     if ($Serverlist.count -lt 1) {
 
         #Otherwise fallback to DNS Resolution
-        write-warning "Failed.`nUsing DNS for Domain controller resolution..."
+        Write-Verbose "Failed.`nFalling back to DNS for Domain controller resolution..."
         $ServerList = [System.Net.DNS]::Resolve($Domain).AddressList.IPAddressToString
     }
 
     if ($Serverlist.count -lt 1) {
 
         #Otherwise fallback to DNS Resolution
-        write-warning "Could not obtain a list of DCs for $domain"
+        Write-Verbose "Could not obtain a list of DCs for $domain"
         break
     }
 }
 
 # Test Port connectivity and Latency
-
+$MyName=$([System.Net.Dns]::GetHostByName($env:computerName).Hostname)
+Write-verbose "Source: $MyName"
 $ServerList | ForEach-Object {
 
-    $Server=$_
-    write-warning "   Testing $Server..."
+    $Server=$_.Name
+
+    if ($Server -ne $MyName) {
+
+    Write-Verbose "   Testing $Server [$($_.Reason)]..."
     
     
     #Test Latency
@@ -375,7 +480,7 @@ $ServerList | ForEach-Object {
         $PingTest=Test-connection -ComputerName $Server -count 1 -ErrorAction SilentlyContinue
     }
     catch {
-        write-warning "$Server ping failed"
+        Write-Verbose "$Server ping failed"
     }
     
     if ($LatencyOnly) {
@@ -433,15 +538,16 @@ $ServerList | ForEach-Object {
          
      } #LatencyOnly
 
+    }
  
 }
 
 if ($latencyonly) {
-    $results | Sort-Object -Property Latency | ft -autosize -wrap
+    $results | Sort-Object -Property Latency | ft -autosize 
     $results | Sort-Object -Property Latency | ft -autosize | out-file PortTest.txt
      "Wrote PortTest.txt"
 } else {
-    $Results | Sort-Object -Property Passed -Descending | ft Passed,Type,Port,ComputerName,RemoteAddress,Latency,Notes -autosize -wrap
+    $Results | Sort-Object -Property Passed -Descending | ft Passed,Type,Port,ComputerName,RemoteAddress,Latency,Notes -autosize 
     $Results | Sort-Object -Property Passed -Descending | ft Passed,Type,Port,ComputerName,RemoteAddress,Latency,Notes -autosize | out-file PortTest.txt
     "Wrote PortTest.txt"
 }
